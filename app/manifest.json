@@ -1,0 +1,19 @@
+{
+  "name": "رسّام — استوديو الصور بالذكاء الاصطناعي",
+  "short_name": "رسّام",
+  "description": "استوديو عربي لتوليد الصور بالذكاء الاصطناعي: اكتب بالعربية واحصل على صور احترافية",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d1117",
+  "theme_color": "#d4a437",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
