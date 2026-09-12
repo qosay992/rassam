@@ -3,8 +3,11 @@ node_modules/
 out/
 build/
 dist/
+.open-next/
+.wrangler/
 .env
 .env*.local
+.env.deploy
 .DS_Store
 *.tsbuildinfo
 next-env.d.ts

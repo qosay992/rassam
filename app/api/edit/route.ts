@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { LIMITS } from "@/lib/config";
 import { editImage } from "@/lib/editProvider";
-import { enhancePrompt } from "@/lib/enhance";
-import { screenPrompt } from "@/lib/safety";
+import { enhanceEditPrompt } from "@/lib/enhance";
+import { screenPrompt, screenEditPrompt } from "@/lib/safety";
 import { FPCookie, canGen, commitGen, canRate } from "@/lib/quota";
 
 export const runtime = "nodejs";
@@ -68,14 +68,10 @@ export async function POST(req: NextRequest) {
     return res;
   }
 
-  // تحسين أمر التعديل (ترجمة عربي → إنجليزي) — بدون وسوم نمط
-  const { prompt } = await enhancePrompt(
-    `Edit this image: ${cmdRaw}. Apply only the requested change, keep everything else identical.`,
-    "",
-    !noEnhance
-  );
+  // تحسين أمر التعديل — تعليمات مخصصة تُلزم النموذج بالحفاظ على موضوع الصورة
+  const { prompt } = await enhanceEditPrompt(cmdRaw, !noEnhance);
 
-  const safety2 = screenPrompt(prompt);
+  const safety2 = screenEditPrompt(prompt);
   if (!safety2.ok) {
     return NextResponse.json({ ok: false, msg: safety2.reason }, { status: 422 });
   }
