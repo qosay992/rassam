@@ -4,6 +4,11 @@ compatibility_date = "2025-03-01"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
+# Workers AI Binding — الواجهة الوحيدة التي تستقبل صوراً فعلياً لنماذج FLUX.2
+# (واجهة REST تتجاهل الصور — مُثبت بالتشخيص)
+[ai]
+binding = "AI"
+
 [observability.logs]
 enabled = true
 

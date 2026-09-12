@@ -83,6 +83,8 @@ export async function POST(req: NextRequest) {
       ok: true,
       image: `data:image/jpeg;base64,${result.imageBase64}`,
       provider: result.provider,
+      mode: result.mode,
+      ...(result.bindingDebug ? { bindingDebug: result.bindingDebug } : {}),
       finalPrompt: result.finalPrompt,
       used: q.used,
       limit: q.limit,

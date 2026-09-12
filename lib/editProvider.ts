@@ -1,9 +1,9 @@
-// ===== مزوّد تحرير الصور — نهج "الوصف المرئي + إعادة الإنشاء" =====
-// حقيقة مُثبتة بالتشخيص: واجهة REST لدى Cloudflare لا تستقبل صوراً لأي
-// نموذج صور متاح (FLUX.2 klein/dev، SDXL، dreamshaper) — تتجاهلها وتولّد نصياً
-// الحل الواقعي: نموذج رؤية يصف الصورة المرفوعة بدقة (الموضوع/الوضعية/الملابس/الخلفية)
-// ثم يُعاد إنشاء الصورة عبر FLUX بالوصف + أمر التعديل — النتيجة تحاكي الأصل مع التعديل
+// ===== مزوّد تحرير الصور — طبقتان =====
+// الطبقة 1 (الأولى): Workers AI Binding عبر getCloudflareContext — الواجهة الوحيدة
+// التي تستقبل الصور فعلياً لنماذج FLUX.2 (REST يتجاهلها — مُثبت بالتشخيص الموسع)
+// الطبقة 2 (تراجع): الوصف المرئي + إعادة الإنشاء عبر REST — تعمل في كل بيئة
 
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { getProvider } from "./config";
 
 export interface EditParams {
@@ -14,16 +14,78 @@ export interface EditParams {
 export interface EditResult {
   imageBase64: string;
   provider: string;
-  finalPrompt: string;   // الوصف المدمج المُرسل فعلياً
+  finalPrompt: string;
+  mode: "binding" | "vision";   // للشفافية: أي طبقة أنتجت النتيجة
+  bindingDebug?: string[];      // تشخيص فشل الـ Binding (يُعرض مؤقتاً)
 }
 
+const CF_EDIT_MODEL = "@cf/black-forest-labs/flux-2-klein-9b";
 const CF_VISION_MODEL = "@cf/meta/llama-3.2-11b-vision-instruct";
 const CF_GEN_MODEL = "@cf/black-forest-labs/flux-1-schnell";
 const QUALITY = "highly detailed, masterpiece, best quality";
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-// ---- أبعاد الصورة من الترويسة (PNG IHDR / JPEG SOF) بدون مكتبات ----
+// ---------- الطبقة 1: Binding حقيقي ----------
+async function editViaBinding(p: EditParams): Promise<string | null> {
+  let ctx: any;
+  try {
+    ctx = await getCloudflareContext();
+  } catch {
+    return null; // بيئة بلا binding (dev محلي مثلاً)
+  }
+  const ai = ctx?.env?.AI;
+  if (!ai?.run) return null;
+
+  const bindingDebug: string[] = [];
+  const bytes = new Uint8Array(Buffer.from(p.imageBase64, "base64"));
+
+  // سلسلة صيغ: blob ملف، مصفوفة، multipart صريح — حتى تثبت الصيغة الفعالة
+  const inputs: any[] = [
+    {
+      prompt: p.prompt,
+      image: [new Blob([bytes], { type: "image/jpeg" })],
+    },
+    {
+      prompt: p.prompt,
+      image: [bytes],
+    },
+    {
+      prompt: p.prompt,
+      image: new Blob([bytes], { type: "image/jpeg" }),
+    },
+  ];
+
+  for (let idx = 0; idx < inputs.length; idx++) {
+    const input = inputs[idx];
+    try {
+      const resp: any = await ai.run(CF_EDIT_MODEL, input);
+      let b64: string | null = null;
+      if (typeof resp === "string" && resp.length > 100) {
+        b64 = resp;
+      } else if (resp instanceof Blob || resp instanceof ArrayBuffer) {
+        const buf = Buffer.from(await new Response(resp).arrayBuffer());
+        if (buf.length > 1000) b64 = buf.toString("base64");
+      } else if (typeof resp?.image === "string" && resp.image.length > 100) {
+        b64 = resp.image;
+      } else if (resp instanceof ReadableStream) {
+        const buf = Buffer.from(await new Response(resp).arrayBuffer());
+        if (buf.length > 1000) b64 = buf.toString("base64");
+      }
+      if (b64) return b64;
+      bindingDebug.push(`v${idx + 1}: no-image (${typeof resp})`);
+    } catch (e) {
+      const msg = String((e as any)?.message || e);
+      bindingDebug.push(`v${idx + 1}: ${msg.slice(0, 120)}`);
+      if (msg.includes("not allowed") || msg.includes("Authentication")) throw new Error("الـ Binding غير مصرح له بهذا النموذج");
+    }
+    await sleep(400);
+  }
+  (globalThis as any).__rassamBindingDebug = bindingDebug;
+  return null;
+}
+
+// ---------- الطبقة 2: وصف مرئي + إعادة إنشاء (REST) ----------
 export function imageDims(imageBase64: string): { w: number; h: number } | null {
   const buf = Buffer.from(imageBase64, "base64");
   if (buf.length < 24) return null;
@@ -50,7 +112,6 @@ function clampDim(n: number): number {
   return Math.max(256, Math.min(2048, Math.round(n / 64) * 64));
 }
 
-// ---- وصف الصورة عبر نموذج الرؤية — "عين" النظام على صورتك ----
 async function describeImage(imageBase64: string): Promise<string | null> {
   const acc = process.env.CF_ACCOUNT_ID;
   const tok = process.env.CF_API_TOKEN;
@@ -67,7 +128,7 @@ async function describeImage(imageBase64: string): Promise<string | null> {
             content: [
               {
                 type: "text",
-                text: "Describe this photo in one rich English paragraph (max 120 words) as an image-generation prompt. Include: the main subject and its precise appearance (age range, gender, hair, clothing), pose and expression, framing (close-up/medium/full), the current background and setting, lighting and mood, and photographic style. Output only the paragraph.",
+                text: "Describe this photo in one rich English paragraph (max 120 words) as an image-generation prompt. Include: the main subject and its precise appearance, pose and expression, framing, the current background and setting, lighting and mood, and photographic style. Output only the paragraph.",
               },
               { type: "image_url", image_url: { url: `data:image/jpeg;base64,${imageBase64}` } },
             ],
@@ -77,7 +138,10 @@ async function describeImage(imageBase64: string): Promise<string | null> {
         signal: AbortSignal.timeout(60_000),
       }
     );
-    if (!res.ok) return null;
+    if (!res.ok) {
+      if (res.status === 429) throw new Error("QUOTA_EXHAUSTED");
+      return null;
+    }
     const j: any = await res.json();
     let out = j?.result?.response;
     if (!out || typeof out !== "string") return null;
@@ -88,18 +152,15 @@ async function describeImage(imageBase64: string): Promise<string | null> {
   }
 }
 
-// ---- توليد عبر FLUX مع أبعاد الصورة الأصلية وسلسلة تنازل ----
 async function genFlux(prompt: string, w: number, h: number): Promise<string> {
   const acc = process.env.CF_ACCOUNT_ID!;
   const tok = process.env.CF_API_TOKEN!;
   const url = `https://api.cloudflare.com/client/v4/accounts/${acc}/ai/run/${CF_GEN_MODEL}`;
-
   const attempts = [
     { prompt, steps: 8, width: w, height: h },
     { prompt, steps: 8 },
     { prompt: prompt.slice(0, 1800), steps: 4 },
   ];
-
   let lastErr: any = null;
   for (let i = 0; i < attempts.length; i++) {
     try {
@@ -109,50 +170,59 @@ async function genFlux(prompt: string, w: number, h: number): Promise<string> {
         body: JSON.stringify(attempts[i]),
         signal: AbortSignal.timeout(120_000),
       });
-      if (!res.ok) {
-        lastErr = `HTTP ${res.status} ${(await res.text().catch(() => "")).slice(0, 120)}`;
-        continue;
-      }
+      if (res.status === 429) throw new Error("نفدت الحصة السحابية اليومية مؤقتاً — تتجدد بعد منتصف الليل UTC");
+      if (!res.ok) { lastErr = `HTTP ${res.status}`; continue; }
       const ct = res.headers.get("content-type") || "";
       if (ct.includes("json")) {
         const j: any = await res.json();
-        if (j?.success && typeof j?.result?.image === "string" && j.result.image.length > 100) {
-          return j.result.image;
-        }
-        lastErr = "استجابة بلا صورة";
-        continue;
+        if (j?.success && typeof j?.result?.image === "string" && j.result.image.length > 100) return j.result.image;
+        lastErr = "بلا صورة"; continue;
       }
       const buf = Buffer.from(await res.arrayBuffer());
       if (buf.length > 1000) return buf.toString("base64");
       lastErr = "صورة فارغة";
-    } catch (e: any) {
-      lastErr = String(e?.message || e).slice(0, 120);
-    }
+    } catch (e: any) { lastErr = String(e?.message || e).slice(0, 100); }
     if (i < attempts.length - 1) await sleep(800);
   }
-  throw new Error(`تعذّر إعادة الإنشاء: ${String(lastErr).slice(0, 140)}`);
+  throw new Error(`تعذّر إعادة الإنشاء: ${String(lastErr).slice(0, 120)}`);
 }
 
+// ---------- المرسّى ----------
 export async function editImage(p: EditParams): Promise<EditResult> {
   if (getProvider() !== "cloudflare") {
-    throw new Error("تحرير الصور يتطلب تفعيل المزوّد السحابي (Cloudflare) — أضف المفاتيح في .env");
+    throw new Error("تحرير الصور يتطلب تفعيل المزوّد السحابي (Cloudflare)");
   }
 
-  // 1) وصف الصورة عبر الرؤية — بدونه لا سبيل لتمرير محتوى الصورة
-  const desc = await describeImage(p.imageBase64);
-  if (!desc) {
-    throw new Error("تعذّر تحليل الصورة — جرّب صورة أوضح أو أصغر حجماً (حتى 2MB)");
+  // الطبقة 1: Binding — تحرير حقيقي يرى صورتك
+  try {
+    const b64 = await editViaBinding(p);
+    if (b64) {
+      return { imageBase64: b64, provider: "cloudflare/flux-2-klein-9b-binding", finalPrompt: p.prompt, mode: "binding" };
+    }
+  } catch (e: any) {
+    // أخطاء الصلاحيات لا تسقط للطبقة الثانية بصمت — لكن نكمل: أفضل نتيجة متاحة
+    console.error("binding edit failed:", e?.message);
   }
 
-  // 2) دمج: وصف الأصل + أمر التعديل
+  // الطبقة 2: وصف مرئي + إعادة إنشاء
+  const desc = await describeImage(p.imageBase64).catch((e: any) => {
+    if (String(e?.message).includes("QUOTA_EXHAUSTED")) {
+      throw new Error("نفدت الحصة السحابية اليومية مؤقتاً — تتجدد بعد منتصف الليل UTC. عد قريباً أو فعّل خطة Workers Paid");
+    }
+    return null;
+  });
+  if (!desc) throw new Error("تعذّر تحليل الصورة — جرّب صورة أوضح أو أصغر حجماً");
   const finalPrompt = `${desc}. ${p.prompt}. ${QUALITY}`.replace(/\s+/g, " ").slice(0, 1900);
-
-  // 3) أبعاد من الصورة الأصلية إن أمكن
   const dims = imageDims(p.imageBase64);
   const w = dims ? clampDim(dims.w) : 1024;
   const h = dims ? clampDim(dims.h) : 1024;
-
-  // 4) إعادة الإنشاء عبر FLUX
   const imageBase64 = await genFlux(finalPrompt, w, h);
-  return { imageBase64, provider: "cloudflare/vision+flux", finalPrompt };
+  const dbg = (globalThis as any).__rassamBindingDebug as string[] | undefined;
+  return {
+    imageBase64,
+    provider: "cloudflare/vision+flux",
+    finalPrompt,
+    mode: "vision",
+    ...(dbg ? { bindingDebug: dbg } : {}),
+  };
 }
