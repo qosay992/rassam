@@ -37,27 +37,33 @@ async function editViaBinding(p: EditParams): Promise<string | null> {
   const ai = ctx?.env?.AI;
   if (!ai?.run) return null;
 
-  const bindingDebug: string[] = [];
   const bytes = new Uint8Array(Buffer.from(p.imageBase64, "base64"));
 
-  // سلسلة صيغ: blob ملف، مصفوفة، multipart صريح — حتى تثبت الصيغة الفعالة
-  const inputs: any[] = [
-    {
-      prompt: p.prompt,
-      image: [new Blob([bytes], { type: "image/jpeg" })],
-    },
-    {
-      prompt: p.prompt,
-      image: [bytes],
-    },
-    {
-      prompt: p.prompt,
-      image: new Blob([bytes], { type: "image/jpeg" }),
-    },
-  ];
+  // الصيغة الرسمية (مصدر: cloudflare-image-mcp + docs): multipart:{body, contentType}
+  // حيث body = FormData مُسلسلة عبر new Response(form).body
+  const attempts = [1, 2].map(variant => {
+    const form = new FormData();
+    form.append("prompt", p.prompt);
+    form.append("width", "1024");
+    form.append("height", "1024");
+    if (variant === 1) {
+      form.append("image", new Blob([bytes], { type: "image/jpeg" }), "image.jpg");
+    } else {
+      form.append("image", p.imageBase64); // صيغة Puter/النص base64
+    }
+    const serialized = new Response(form);
+    return {
+      multipart: {
+        body: serialized.body,
+        contentType: serialized.headers.get("content-type")!,
+      },
+    };
+  });
 
-  for (let idx = 0; idx < inputs.length; idx++) {
-    const input = inputs[idx];
+  const bindingDebug: string[] = [];
+
+  for (let idx = 0; idx < attempts.length; idx++) {
+    const input = attempts[idx];
     try {
       const resp: any = await ai.run(CF_EDIT_MODEL, input);
       let b64: string | null = null;
