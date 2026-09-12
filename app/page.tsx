@@ -367,7 +367,7 @@ export default function Home() {
           ) : (
           <>
             <h3>🪄 لوحة التحرير</h3>
-            <p className="sub">ارفع صورة أو استخدم آخر صورة مولدة — ثم اكتب أمر التعديل بالعربية</p>
+            <p className="sub">يقرأ صورتك ويعيد إنشاءها بتعديلك — يشرح النظام محتوى صورتك أولاً ثم يطبّق التغيير</p>
 
             <div className="dropzone" onClick={() => fileRef.current?.click()}>
               {editSrc ? (
@@ -420,6 +420,9 @@ export default function Home() {
               <div className="ba-col">
                 <div className="ba-lbl ba-after">بعد</div>
                 <img src={editResult.image} alt="بعد" className="ba-img" />
+                <div style={{ fontSize: 11, color: "var(--muted)", margin: "8px 0" }}>
+                  إعادة إنشاء موجّهة بوصف صورتك — قد تختلف التفاصيل الدقيقة عن الأصل
+                </div>
                 <div className="stage-actions">
                   <button className="btn btn-ghost" onClick={() => downloadDataUrl(editResult.image!)}>⬇️ تنزيل</button>
                   <button className="btn btn-ghost" onClick={() => { setEditSrc(editResult.image!); setEditResult(null); notify("أدخلنا النتيجة للتحرير مرة أخرى"); }}>🪄 حرّرها مجدداً</button>
